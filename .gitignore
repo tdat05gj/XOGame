@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.env
+functions/node_modules/
+public/node_modules/

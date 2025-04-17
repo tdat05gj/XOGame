@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cờ Caro 33x33 trên Binance Smart Chain</title>
+    <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .board-container { max-height: 600px; overflow: auto; }
+        .cell { width: 24px; height: 24px; font-size: 14px; line-height: 24px; text-align: center; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
+        .modal-content { background-color: white; margin: 15% auto; padding: 20px; border: 1px solid #888; width: 80%; max-width: 500px; border-radius: 8px; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen px-4">
+    <div id="mainMenu">
+        <h1 class="text-3xl font-bold mb-4">Cờ Caro 33x33 trên Binance Smart Chain</h1>
+        <div id="walletStatus" class="mb-4 text-lg"></div>
+        <button id="connectWallet" class="bg-blue-500 text-white px-4 py-2 rounded mb-4 hover:bg-blue-600">Kết nối MetaMask</button>
+        <div id="balanceInfo" class="mb-4 text-lg"></div>
+        <div class="mb-4 flex flex-wrap gap-2">
+            <button id="unrankMode" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Chế độ Unrank</button>
+            <button id="rankMode" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Chế độ Rank (1 XO + 0.001 BNB)</button>
+            <button id="claimRewards" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 hidden">Claim Token</button>
+        </div>
+        <div class="mb-4">
+            <h2 class="text-xl font-bold">Mua XO</h2>
+            <div class="flex flex-wrap gap-2">
+                <button id="buy3usd" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600" onclick="buyXO(1)">3$ = 10 XO</button>
+                <button id="buy5usd" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600" onclick="buyXO(2)">5$ = 20 XO</button>
+                <button id="buy10usd" class="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600" onclick="buyXO(3)">10$ = 50 XO</button>
+            </div>
+        </div>
+        <div class="mb-4">
+            <h2 class="text-xl font-bold">Batch Rank</h2>
+            <input id="batchCount" type="number" min="1" max="10" value="1" class="border p-2 rounded mr-2" placeholder="Số trận">
+            <button id="batchRank" class="bg-orange-500 text-white px-4 py-2 rounded hover:bg-orange-600" onclick="batchEnterRank()">Batch Enter Rank</button>
+        </div>
+        <div id="pendingRewards" class="mb-4 text-lg"></div>
+        <div class="mb-4 w-full max-w-4xl">
+            <h2 class="text-xl font-bold">Leaderboard</h2>
+            <table id="leaderboardTable">
+                <thead>
+                    <tr>
+                        <th>Địa chỉ ví</th>
+                        <th>Số trận thắng</th>
+                        <th>XO kiếm được</th>
+                    </tr>
+                </thead>
+                <tbody id="leaderboardBody"></tbody>
+            </table>
+        </div>
+        <div id="personalStats" class="mt-4">
+            <h2 class="text-xl font-bold">Thống kê cá nhân</h2>
+            <ul id="leaderboardList" class="list-disc pl-5"></ul>
+        </div>
+    </div>
+
+    <div id="gameScreen" class="hidden">
+        <div class="board-container">
+            <div id="gameBoard" class="grid gap-0 bg-white p-4 rounded shadow" style="grid-template-columns: repeat(33, minmax(0, 1fr));"></div>
+        </div>
+        <div id="gameStatus" class="mt-4 text-lg font-semibold"></div>
+        <div id="timer" class="mt-2 text-lg font-semibold"></div>
+    </div>
+
+    <!-- Modal thông báo kết quả -->
+    <div id="resultModal" class="modal">
+        <div class="modal-content">
+            <h2 class="text-xl font-bold mb-4">Kết quả trận đấu</h2>
+            <p id="resultMessage" class="mb-4"></p>
+            <button id="closeModal" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Đóng</button>
+        </div>
+    </div>
+
+    <script>
+        let provider, signer, contract, currentPlayer = 'X', board = Array(1089).fill('');
+        let gameOver = false, account, mode = 'unrank', opponent = null;
+        let unrankMatches = [], isInMatch = false, timerInterval = null, timeLeft = 60;
+        const serverApi = 'https://us-central1-xogame-21b17.cloudfunctions.net/api';
+        const contractAddress = '0xf029c33990742f61ebf772cef257343bba55b20b';
+        const contractABI = [
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "_priceFeed",
+                        "type": "address"
+                    }
+                ],
+                "stateMutability": "nonpayable",
+                "type": "constructor"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "owner",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "spender",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint256",
+                        "name": "value",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "Approval",
+                "type": "event"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "player1",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "player2",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint8",
+                        "name": "result1",
+                        "type": "uint8"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "bool",
+                        "name": "isRanked",
+                        "type": "bool"
+                    }
+                ],
+                "name": "GameRecorded",
+                "type": "event"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "player",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint256",
+                        "name": "wins",
+                        "type": "uint256"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint256",
+                        "name": "xoEarned",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "LeaderboardUpdated",
+                "type": "event"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "player",
+                        "type": "address"
+                    }
+                ],
+                "name": "RankMatchEntered",
+                "type": "event"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "player",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "RewardClaimed",
+                "type": "event"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "newServer",
+                        "type": "address"
+                    }
+                ],
+                "name": "ServerAddressUpdated",
+                "type": "event"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "buyer",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint256",
+                        "name": "bnbAmount",
+                        "type": "uint256"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint256",
+                        "name": "xoAmount",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "TokensPurchased",
+                "type": "event"
+            },
+            {
+                "anonymous": false,
+                "inputs": [
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "from",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": true,
+                        "internalType": "address",
+                        "name": "to",
+                        "type": "address"
+                    },
+                    {
+                        "indexed": false,
+                        "internalType": "uint256",
+                        "name": "value",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "Transfer",
+                "type": "event"
+            },
+            {
+                "inputs": [],
+                "name": "GAME_ALLOCATION",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "OWNER_ALLOCATION",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "TOTAL_SUPPLY",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "tokenOwner",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "spender",
+                        "type": "address"
+                    }
+                ],
+                "name": "allowance",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "spender",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "approve",
+                "outputs": [
+                    {
+                        "internalType": "bool",
+                        "name": "",
+                        "type": "bool"
+                    }
+                ],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "account",
+                        "type": "address"
+                    }
+                ],
+                "name": "balanceOf",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "count",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "batchEnterRankedMatch",
+                "outputs": [],
+                "stateMutability": "payable",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "burn",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "uint8",
+                        "name": "package",
+                        "type": "uint8"
+                    }
+                ],
+                "name": "buyXO",
+                "outputs": [],
+                "stateMutability": "payable",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address[]",
+                        "name": "opponents",
+                        "type": "address[]"
+                    },
+                    {
+                        "internalType": "uint8[]",
+                        "name": "results",
+                        "type": "uint8[]"
+                    },
+                    {
+                        "internalType": "bytes[]",
+                        "name": "signatures",
+                        "type": "bytes[]"
+                    }
+                ],
+                "name": "claimUnrankRewards",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "decimals",
+                "outputs": [
+                    {
+                        "internalType": "uint8",
+                        "name": "",
+                        "type": "uint8"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "start",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "limit",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "getLeaderboard",
+                "outputs": [
+                    {
+                        "components": [
+                            {
+                                "internalType": "address",
+                                "name": "player",
+                                "type": "address"
+                            },
+                            {
+                                "internalType": "uint256",
+                                "name": "wins",
+                                "type": "uint256"
+                            },
+                            {
+                                "internalType": "uint256",
+                                "name": "xoEarned",
+                                "type": "uint256"
+                            }
+                        ],
+                        "internalType": "struct CaroGameXO.LeaderboardEntry[]",
+                        "name": "",
+                        "type": "tuple[]"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "getLeaderboardLength",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "player",
+                        "type": "address"
+                    }
+                ],
+                "name": "getPlayerStats",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "wins",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "losses",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "draws",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "pending",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "xoEarned",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "bytes32",
+                        "name": "",
+                        "type": "bytes32"
+                    }
+                ],
+                "name": "matchResults",
+                "outputs": [
+                    {
+                        "internalType": "bool",
+                        "name": "",
+                        "type": "bool"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "name",
+                "outputs": [
+                    {
+                        "internalType": "string",
+                        "name": "",
+                        "type": "string"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "owner",
+                "outputs": [
+                    {
+                        "internalType": "address",
+                        "name": "",
+                        "type": "address"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "",
+                        "type": "address"
+                    }
+                ],
+                "name": "pendingRewards",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "",
+                        "type": "address"
+                    }
+                ],
+                "name": "players",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "wins",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "losses",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "draws",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "xoEarned",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "priceFeed",
+                "outputs": [
+                    {
+                        "internalType": "contract AggregatorV3Interface",
+                        "name": "",
+                        "type": "address"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "rankBnbFee",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "rankFee",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "player1",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "player2",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint8",
+                        "name": "result1",
+                        "type": "uint8"
+                    },
+                    {
+                        "internalType": "bytes",
+                        "name": "signature",
+                        "type": "bytes"
+                    }
+                ],
+                "name": "recordRankGame",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "server",
+                "outputs": [
+                    {
+                        "internalType": "address",
+                        "name": "",
+                        "type": "address"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "_newServer",
+                        "type": "address"
+                    }
+                ],
+                "name": "setServerAddress",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "symbol",
+                "outputs": [
+                    {
+                        "internalType": "string",
+                        "name": "",
+                        "type": "string"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "totalSupply",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "recipient",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "transfer",
+                "outputs": [
+                    {
+                        "internalType": "bool",
+                        "name": "",
+                        "type": "bool"
+                    }
+                ],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [
+                    {
+                        "internalType": "address",
+                        "name": "sender",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "recipient",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "amount",
+                        "type": "uint256"
+                    }
+                ],
+                "name": "transferFrom",
+                "outputs": [
+                    {
+                        "internalType": "bool",
+                        "name": "",
+                        "type": "bool"
+                    }
+                ],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "unrankReward",
+                "outputs": [
+                    {
+                        "internalType": "uint256",
+                        "name": "",
+                        "type": "uint256"
+                    }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            }
+        ];
+
+        async function connectWallet() {
+            if (window.ethereum) {
+                try {
+                    provider = new ethers.providers.Web3Provider(window.ethereum);
+                    await provider.send("eth_requestAccounts", []);
+                    await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x38' }] });
+                    signer = provider.getSigner();
+                    account = await signer.getAddress();
+                    contract = new ethers.Contract(contractAddress, contractABI, signer);
+                    document.getElementById('walletStatus').innerText = `Đã kết nối: ${account.slice(0, 6)}...${account.slice(-4)}`;
+                    document.getElementById('connectWallet').classList.add('hidden');
+                    document.getElementById('claimRewards').classList.remove('hidden');
+                    updateBalance();
+                    updateLeaderboard();
+                    updateGlobalLeaderboard();
+                } catch (error) {
+                    console.error('Lỗi kết nối MetaMask:', error);
+                    alert('Kết nối MetaMask thất bại!');
+                }
+            } else {
+                alert("Vui lòng cài đặt MetaMask!");
+            }
+        }
+
+        async function updateBalance() {
+            try {
+                const balance = await contract.balanceOf(account);
+                const pending = await contract.pendingRewards(account);
+                document.getElementById('balanceInfo').innerText = `Số dư XO: ${ethers.utils.formatEther(balance)} | Pending: ${ethers.utils.formatEther(pending)} XO`;
+            } catch (error) {
+                console.error('Lỗi lấy số dư:', error);
+            }
+        }
+
+        function createBoard() {
+            const boardElement = document.getElementById('gameBoard');
+            boardElement.innerHTML = '';
+            for (let i = 0; i < 1089; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell border flex items-center justify-center cursor-pointer';
+                cell.dataset.index = i;
+                cell.addEventListener('click', () => makeMove(i));
+                boardElement.appendChild(cell);
+            }
+        }
+
+        async function makeMove(index) {
+            if (board[index] !== '' || gameOver || !account || !opponent || !isInMatch) return;
+            board[index] = currentPlayer;
+            document.querySelector(`[data-index="${index}"]`).innerText = currentPlayer;
+            clearInterval(timerInterval);
+            await sendMoveToServer(index);
+        }
+
+        async function sendMoveToServer(index) {
+            try {
+                const response = await fetch(`${serverApi}/move`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ player: account, opponent, index, mode })
+                });
+                const data = await response.json();
+                if (data.result !== undefined) {
+                    gameOver = true;
+                    isInMatch = false;
+                    clearInterval(timerInterval);
+                    document.getElementById('gameStatus').innerText = data.message;
+                    showResultModal(data.message);
+                    if (mode === 'unrank') {
+                        unrankMatches.push({ opponent, result: data.result, signature: data.signature });
+                    } else {
+                        const message = ethers.utils.solidityKeccak256(['address', 'address', 'uint8', 'bool'], [account, opponent, data.result, true]);
+                        const signature = await signer.signMessage(ethers.utils.arrayify(message));
+                        await contract.recordRankGame(account, opponent, data.result, signature, { gasLimit: 300000 });
+                    }
+                    updateBalance();
+                    updateLeaderboard();
+                    updateGlobalLeaderboard();
+                    showMainMenu();
+                } else if (data.opponentMove) {
+                    board[data.opponentMove] = currentPlayer === 'X' ? 'O' : 'X';
+                    document.querySelector(`[data-index="${data.opponentMove}"]`).innerText = currentPlayer === 'X' ? 'O' : 'X';
+                    currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
+                    document.getElementById('gameStatus').innerText = `Lượt của ${currentPlayer === 'X' ? 'Bạn (X)' : 'Đối thủ (O)'}`;
+                    if (currentPlayer === 'X') {
+                        startTimer();
+                    }
+                }
+            } catch (error) {
+                console.error('Lỗi khi gửi nước đi:', error);
+                alert('Gửi nước đi thất bại!');
+            }
+        }
+
+        function startTimer() {
+            timeLeft = 60;
+            document.getElementById('timer').innerText = `Thời gian còn lại: ${timeLeft}s`;
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                document.getElementById('timer').innerText = `Thời gian còn lại: ${timeLeft}s`;
+                if (timeLeft <= 0) {
+                    clearInterval(timerInterval);
+                    endMatchDueToTimeout();
+                }
+            }, 1000);
+        }
+
+        async function endMatchDueToTimeout() {
+            gameOver = true;
+            isInMatch = false;
+            clearInterval(timerInterval);
+            const result = currentPlayer === 'X' ? 2 : 1; // Người chơi hiện tại thua
+            document.getElementById('gameStatus').innerText = 'Bạn thua do hết thời gian!';
+            showResultModal('Bạn thua do không đánh trong 60 giây!');
+            if (mode === 'unrank') {
+                const message = ethers.utils.solidityKeccak256(['address', 'address', 'uint8', 'bool'], [account, opponent, result, false]);
+                const signature = await signer.signMessage(ethers.utils.arrayify(message));
+                unrankMatches.push({ opponent, result, signature });
+            } else {
+                const message = ethers.utils.solidityKeccak256(['address', 'address', 'uint8', 'bool'], [account, opponent, result, true]);
+                const signature = await signer.signMessage(ethers.utils.arrayify(message));
+                await contract.recordRankGame(account, opponent, result, signature, { gasLimit: 300000 });
+            }
+            updateBalance();
+            updateLeaderboard();
+            updateGlobalLeaderboard();
+            showMainMenu();
+        }
+
+        async function updateLeaderboard() {
+            if (!account) return;
+            try {
+                const stats = await contract.getPlayerStats(account);
+                document.getElementById('leaderboardList').innerHTML = `
+                    <li>Thắng: ${stats.wins}</li>
+                    <li>Thua: ${stats.losses}</li>
+                    <li>Hòa: ${stats.draws}</li>
+                    <li>XO kiếm được: ${ethers.utils.formatEther(stats.xoEarned)} XO</li>
+                `;
+                document.getElementById('pendingRewards').innerText = `Token chờ Claim: ${ethers.utils.formatEther(stats.pending)} XO`;
+            } catch (error) {
+                console.error('Lỗi khi lấy thống kê:', error);
+            }
+        }
+
+        async function updateGlobalLeaderboard() {
+            try {
+                const length = await contract.getLeaderboardLength();
+                const limit = Math.min(length, 10);
+                const entries = await contract.getLeaderboard(0, limit);
+                const tbody = document.getElementById('leaderboardBody');
+                tbody.innerHTML = '';
+                entries.forEach(entry => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${entry.player.slice(0, 6)}...${entry.player.slice(-4)}</td>
+                        <td>${entry.wins}</td>
+                        <td>${ethers.utils.formatEther(entry.xoEarned)} XO</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (error) {
+                console.error('Lỗi khi lấy Leaderboard:', error);
+            }
+        }
+
+        async function claimRewards() {
+            if (unrankMatches.length === 0) {
+                alert('Không có XO pending để Claim!');
+                return;
+            }
+            try {
+                const opponents = unrankMatches.map(m => m.opponent);
+                const results = unrankMatches.map(m => m.result);
+                const signatures = unrankMatches.map(m => m.signature);
+                const tx = await contract.claimUnrankRewards(opponents, results, signatures, { gasLimit: 500000 });
+                await tx.wait();
+                alert('Claim XO thành công!');
+                unrankMatches = [];
+                updateBalance();
+                updateLeaderboard();
+                updateGlobalLeaderboard();
+            } catch (error) {
+                console.error('Lỗi khi Claim token:', error);
+                alert('Claim thất bại, kiểm tra địa chỉ server hoặc số dư BNB.');
+            }
+        }
+
+        async function buyXO(package) {
+            try {
+                const tx = await contract.buyXO(package, { value: ethers.utils.parseEther('0.01'), gasLimit: 250000 });
+                await tx.wait();
+                alert(`Đã mua ${package === 1 ? '10' : package === 2 ? '20' : '50'} XO!`);
+                updateBalance();
+                updateLeaderboard();
+                updateGlobalLeaderboard();
+            } catch (error) {
+                console.error('Lỗi khi mua XO:', error);
+                alert('Mua XO thất bại, kiểm tra số dư BNB.');
+            }
+        }
+
+        async function batchEnterRank() {
+            const count = parseInt(document.getElementById('batchCount').value);
+            if (count < 1 || count > 10) {
+                alert('Số trận từ 1 đến 10!');
+                return;
+            }
+            try {
+                const totalBnbFee = ethers.utils.parseEther('0.001').mul(count);
+                const tx = await contract.batchEnterRankedMatch(count, { value: totalBnbFee, gasLimit: 400000 });
+                await tx.wait();
+                alert(`Đã nộp ${count} trận Rank!`);
+            } catch (error) {
+                console.error('Lỗi khi nộp Rank:', error);
+                alert('Nộp Rank thất bại, kiểm tra số dư XO/BNB.');
+            }
+        }
+
+        async function selectMode(selectedMode) {
+            mode = selectedMode;
+            opponent = null;
+            resetGame();
+            document.getElementById('gameStatus').innerText = 'Đang chờ ghép cặp...';
+            if (mode === 'rank') {
+                try {
+                    const tx = await contract.batchEnterRankedMatch(1, { value: ethers.utils.parseEther('0.001'), gasLimit: 400000 });
+                    await tx.wait();
+                } catch (error) {
+                    console.error('Lỗi khi tham gia Rank:', error);
+                    alert('Tham gia Rank thất bại, kiểm tra số dư XO/BNB.');
+                    return;
+                }
+            }
+            try {
+                const endpoint = mode === 'rank' ? '/join-rank' : '/join-unrank';
+                const response = await fetch(`${serverApi}${endpoint}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ player: account })
+                });
+                const data = await response.json();
+                opponent = data.opponent;
+                if (opponent) {
+                    isInMatch = true;
+                    currentPlayer = 'X';
+                    showGameScreen();
+                    document.getElementById('gameStatus').innerText = `Đã ghép cặp với ${opponent.slice(0, 6)}...${opponent.slice(-4)}`;
+                    startTimer();
+                } else {
+                    document.getElementById('gameStatus').innerText = 'Đang chờ ghép cặp...';
+                }
+            } catch (error) {
+                console.error('Lỗi khi tham gia:', error);
+                alert('Ghép cặp thất bại, kiểm tra server.');
+            }
+        }
+
+        function resetGame() {
+            board = Array(1089).fill('');
+            currentPlayer = 'X';
+            gameOver = false;
+            createBoard();
+            clearInterval(timerInterval);
+        }
+
+        function showGameScreen() {
+            document.getElementById('mainMenu').classList.add('hidden');
+            document.getElementById('gameScreen').classList.remove('hidden');
+        }
+
+        function showMainMenu() {
+            document.getElementById('gameScreen').classList.add('hidden');
+            document.getElementById('mainMenu').classList.remove('hidden');
+        }
+
+        function showResultModal(message) {
+            const modal = document.getElementById('resultModal');
+            const resultMessage = document.getElementById('resultMessage');
+            resultMessage.innerText = message;
+            modal.style.display = 'block';
+        }
+
+        document.getElementById('closeModal').addEventListener('click', () => {
+            document.getElementById('resultModal').style.display = 'none';
+            resetGame();
+            document.getElementById('gameStatus').innerText = 'Sẵn sàng chơi trận mới!';
+        });
+
+        document.getElementById('connectWallet').addEventListener('click', connectWallet);
+        document.getElementById('unrankMode').addEventListener('click', () => selectMode('unrank'));
+        document.getElementById('rankMode').addEventListener('click', () => selectMode('rank'));
+        document.getElementById('claimRewards').addEventListener('click', claimRewards);
+        createBoard();
+        document.getElementById('gameStatus').innerText = `Kết nối ví để bắt đầu!`;
+    </script>
+</body>
+</html>

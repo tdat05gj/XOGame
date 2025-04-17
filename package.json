@@ -1,0 +1,11 @@
+{
+    "name": "caro-game",
+    "version": "1.0.0",
+    "description": "Caro Game on BSC with Firebase",
+    "scripts": {
+      "deploy": "firebase deploy"
+    },
+    "dependencies": {
+      "firebase": "^10.0.0"
+    }
+  }
